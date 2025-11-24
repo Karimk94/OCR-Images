@@ -60,3 +60,7 @@ easyocr_models/
 *~
 .DS_Store
 easyocr_models.zip
+/deploy_pack/app.py
+/deploy_pack/install_on_server.bat
+/deploy_pack/requirements.txt
+/deploy_pack/install.bat

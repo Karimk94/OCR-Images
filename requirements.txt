@@ -5,3 +5,4 @@ requests
 Pillow
 PyMuPDF
 easyocr
+opencv-python-headless
