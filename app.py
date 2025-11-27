@@ -7,6 +7,7 @@ import cv2
 import numpy as np
 import easyocr
 import requests
+import fitz
 
 # --- Basic Setup ---
 app = Flask(__name__)
@@ -124,6 +125,45 @@ def enhance_with_gemma(text_to_clean):
         logging.error(f"Gemma Error: {e}")
         return text_to_clean
 
+def process_pdf_hybrid(pdf_bytes):
+    """
+    Processes a PDF, handling both searchable and scanned-image PDFs.
+    1. Tries to extract text directly.
+    2. If no text is found, converts pages to images and runs EasyOCR.
+    """
+    full_text = ""
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        
+        for page_num, page in enumerate(doc):
+            # 1. Try to extract text directly
+            page_text = page.get_text()
+            
+            if not page_text.strip():
+                # 2. If no text, it's a scanned image. Run OCR.
+                logging.info(f"Page {page_num+1} is a scanned image. Running OCR...")
+                
+                # Convert page to a high-DPI image
+                pix = page.get_pixmap(dpi=300)
+                img_bytes = pix.tobytes("png") # Convert to PNG bytes
+                
+                # 3. Run EasyOCR on the image bytes
+                page_text = ocr_image_with_easyocr(img_bytes)
+                if page_text.startswith("ERROR:"):
+                    logging.error(f"Failed to OCR page {page_num+1}: {page_text}")
+                    continue # Skip this page on error
+            else:
+                logging.info(f"Page {page_num+1} is searchable. Extracted text directly.")
+
+            full_text += page_text + "\n\n" # Add newline between pages
+            
+        doc.close()
+        return full_text
+
+    except Exception as e:
+        logging.error(f"Failed to process PDF: {e}", exc_info=True)
+        return f"ERROR: Failed to process PDF. {str(e)}"
+
 # --- Endpoints ---
 @app.route('/ocr', methods=['POST'])
 def ocr_endpoint():
@@ -140,6 +180,43 @@ def stream_endpoint():
     raw_text = ocr_image_with_easyocr(data)
     if raw_text.startswith("ERROR:"): return jsonify({'error': raw_text}), 500
     return jsonify({'text': enhance_with_gemma(raw_text)})
+
+# --- PDF Processing Endpoints (Now with Hybrid Logic) ---
+@app.route('/process_pdf', methods=['POST'])
+def process_pdf_endpoint():
+    """Extracts text from searchable OR scanned-image PDFs."""
+    if 'pdf_file' not in request.files:
+        return jsonify({'error': 'No PDF file provided'}), 400
+
+    file = request.files['pdf_file']
+    if file.filename == '':
+        return jsonify({'error': 'No selected file'}), 400
+
+    pdf_bytes = file.read()
+    raw_text = process_pdf_hybrid(pdf_bytes)
+
+    if raw_text.startswith("ERROR:"):
+        return jsonify({'error': raw_text}), 500
+
+    # Send to Gemma for cleanup
+    final_text = enhance_with_gemma(raw_text)
+    return jsonify({'text': final_text})
+        
+@app.route('/process_pdf_stream', methods=['POST'])
+def process_pdf_stream_endpoint():
+    """Handles a PDF file (searchable or scanned) sent as a raw byte stream."""
+    pdf_bytes = request.get_data()
+    if not pdf_bytes:
+        return jsonify(error="No data received in request body"), 400
+        
+    raw_text = process_pdf_hybrid(pdf_bytes)
+
+    if raw_text.startswith("ERROR:"):
+        return jsonify({'error': raw_text}), 500
+
+    # Send to Gemma for cleanup
+    final_text = enhance_with_gemma(raw_text)
+    return jsonify({'text': final_text})
 
 # --- Main ---
 if __name__ == '__main__':
